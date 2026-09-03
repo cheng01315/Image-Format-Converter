@@ -64,10 +64,6 @@ image-format-converter/
 - Pillow 库 (`pip install Pillow`)
 - Windows 系统（预编译可执行文件）
 
-## 许可证
-
-MIT License - 可自由使用和分发。
-
 ## 贡献
 
 欢迎贡献！欢迎提交 issues 或 pull requests。
