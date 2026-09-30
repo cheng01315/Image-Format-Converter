@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# 本地虚拟环境与临时文件
+.venv/
+.buildtemp/
+app.ico
+selftest_report.txt
