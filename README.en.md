@@ -23,7 +23,15 @@ A lightweight image format conversion tool with a graphical interface, supportin
 4. Choose the target format, quality, size, rotation / flip and output folder on the right
 5. Click 「开始转换」 (Start conversion); when it finishes, 「打开输出目录」 (Open output folder) shows the results
 
-The default output folder is `output`, next to the exe (created automatically on the first conversion). The user interface itself is currently in Chinese.
+The default output folder is `output`, next to the exe (created automatically on the first conversion).
+
+## Language
+
+The interface is bilingual (Chinese / English) and switches with one click:
+
+- **Auto-detect**: on launch it reads the system display language — Chinese systems default to Chinese, everything else defaults to English.
+- **Manual switch**: the **中 / EN** button at the top-right of the window toggles all interface text (menus, buttons, settings, status, logs, …) live, while the app is running.
+- **Force a language**: set the environment variable `IMGCONV_LANG` to `zh` or `en` before launching to skip auto-detection and pin the language (handy for testing).
 
 ## Supported formats
 

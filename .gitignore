@@ -12,3 +12,4 @@ dist/
 .buildtemp/
 app.ico
 selftest_report.txt
+*.bak

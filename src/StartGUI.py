@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""图片格式转换器 · 图形界面版
+"""图片格式转换器 · 图形界面版（含中英文切换）
 
 功能：
     - 批量导入图片或整个文件夹（支持递归、保留目录结构）
@@ -7,6 +7,7 @@
     - 缩放、旋转、翻转、质量调节、透明区域填充背景色
     - 后台线程转换，界面不卡顿，可随时取消
     - 支持把文件直接拖到 exe 图标上启动（命令行参数）
+    - 自动检测系统语言（中文 → 中文界面，其他 → 英文界面），并在右上角提供切换按钮
 
 运行：python StartGUI.py
 打包：python build_exe.py
@@ -15,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import locale
 import queue
 import shutil
 import sys
@@ -37,30 +39,40 @@ INPUT_EXTS = {
     ".pbm", ".pnm", ".tga", ".dds", ".pcx", ".jp2", ".j2k", ".eps",
 }
 
-# 目标格式：name 显示的、fmt Pillow 使用的、ext 输出扩展名
+# 目标格式：name 显示的、fmt Pillow 使用的、ext 输出扩展名、desc 双语描述
 TARGETS = [
     {"name": "JPG / JPEG", "fmt": "JPEG", "ext": ".jpg",
-     "desc": "通用压缩图，照片首选，体积小"},
+     "desc": {"zh": "通用压缩图，照片首选，体积小", "en": "Compact photo format, small size"}},
     {"name": "PNG", "fmt": "PNG", "ext": ".png",
-     "desc": "透明背景、无损清晰，图标 / 截图常用"},
+     "desc": {"zh": "透明背景、无损清晰，图标 / 截图常用", "en": "Lossless with transparency, icons / screenshots"}},
     {"name": "WebP", "fmt": "WEBP", "ext": ".webp",
-     "desc": "谷歌高效格式，体积更小，网页常用"},
+     "desc": {"zh": "谷歌高效格式，体积更小，网页常用", "en": "Efficient Google format, great for web"}},
     {"name": "GIF", "fmt": "GIF", "ext": ".gif",
-     "desc": "动图 / 表情包，颜色数量有限"},
+     "desc": {"zh": "动图 / 表情包，颜色数量有限", "en": "Animated images / emojis, limited colors"}},
     {"name": "BMP", "fmt": "BMP", "ext": ".bmp",
-     "desc": "无压缩原图，体积很大"},
+     "desc": {"zh": "无压缩原图，体积很大", "en": "Uncompressed raw bitmap, large size"}},
     {"name": "TIFF", "fmt": "TIFF", "ext": ".tiff",
-     "desc": "印刷级高清图，设计与出版使用"},
+     "desc": {"zh": "印刷级高清图，设计与出版使用", "en": "Print-grade high resolution for publishing"}},
     {"name": "ICO", "fmt": "ICO", "ext": ".ico",
-     "desc": "Windows 图标，自动内嵌多尺寸"},
+     "desc": {"zh": "Windows 图标，自动内嵌多尺寸", "en": "Windows icon with embedded sizes"}},
     {"name": "PDF", "fmt": "PDF", "ext": ".pdf",
-     "desc": "把图片输出为 PDF 文档"},
+     "desc": {"zh": "把图片输出为 PDF 文档", "en": "Export the image as a PDF document"}},
 ]
 TARGET_BY_NAME = {item["name"]: item for item in TARGETS}
 TARGET_NAMES = [item["name"] for item in TARGETS]
 
-ROTATE_CHOICES = {"不旋转": 0, "顺时针 90°": 90, "旋转 180°": 180, "顺时针 270°": 270}
-FLIP_CHOICES = {"不翻转": "none", "水平翻转": "horizontal", "垂直翻转": "vertical"}
+# 旋转 / 翻转选项：内部值固定，显示文案随语言切换
+ROTATE_OPTIONS = [
+    (0, {"zh": "不旋转", "en": "No rotation"}),
+    (90, {"zh": "顺时针 90°", "en": "Rotate 90° CW"}),
+    (180, {"zh": "旋转 180°", "en": "Rotate 180°"}),
+    (270, {"zh": "顺时针 270°", "en": "Rotate 270° CW"}),
+]
+FLIP_OPTIONS = [
+    ("none", {"zh": "不翻转", "en": "No flip"}),
+    ("horizontal", {"zh": "水平翻转", "en": "Flip horizontal"}),
+    ("vertical", {"zh": "垂直翻转", "en": "Flip vertical"}),
+]
 
 DEFAULT_QUALITY = 88
 DEFAULT_BG = "#FFFFFF"
@@ -72,6 +84,144 @@ COLOR_OK = "#137333"
 COLOR_FAIL = "#c5221f"
 COLOR_BUSY = "#1a73e8"
 COLOR_MUTED = "#5f6b7a"
+
+
+# --------------------------------------------------------------------------- #
+# 多语言
+# --------------------------------------------------------------------------- #
+# 每个 key 对应 {"zh": ..., "en": ...}。未命中时回退英文，再回退 key 本身。
+STR = {
+    "app_title":       {"zh": "图片格式转换器 · 图形界面版", "en": "Image Format Converter · GUI"},
+    "subtitle":        {"zh": "批量转换图片格式，支持缩放 / 旋转 / 质量调节，全部在本地完成",
+                        "en": "Batch convert images with resize / rotate / quality, all local"},
+
+    "add_files":       {"zh": "添加图片", "en": "Add Images"},
+    "add_folder":      {"zh": "添加文件夹", "en": "Add Folder"},
+    "remove_selected":  {"zh": "移除选中", "en": "Remove Selected"},
+    "clear_list":      {"zh": "清空列表", "en": "Clear List"},
+    "count":           {"zh": "共 {} 张图片", "en": "Total {} images"},
+
+    "list_title":      {"zh": "待转换图片", "en": "Images to convert"},
+    "col_name":        {"zh": "文件名", "en": "File Name"},
+    "col_dim":         {"zh": "尺寸", "en": "Dimensions"},
+    "col_size":        {"zh": "大小", "en": "Size"},
+    "col_status":      {"zh": "状态", "en": "Status"},
+
+    "preview_hint":    {"zh": "选中图片后显示预览", "en": "Preview appears after selection"},
+    "preview_no_image": {"zh": "无法预览该图片", "en": "Cannot preview this image"},
+
+    "settings_title":   {"zh": "输出设置", "en": "Output Settings"},
+    "target_format":    {"zh": "目标格式", "en": "Target Format"},
+    "quality":         {"zh": "画质", "en": "Quality"},
+    "size":            {"zh": "尺寸", "en": "Size"},
+    "original":        {"zh": "原始", "en": "Original"},
+    "keep_ratio":      {"zh": "保持宽高比（填满给定范围，不拉伸）", "en": "Keep aspect ratio (fill, no stretch)"},
+    "transform":       {"zh": "旋转 / 翻转", "en": "Rotate / Flip"},
+    "background":       {"zh": "背景色", "en": "Background"},
+    "transparent_fill": {"zh": "透明区域填充", "en": "Fill for transparent areas"},
+    "output_dir":      {"zh": "输出目录", "en": "Output Directory"},
+    "browse":          {"zh": "浏览", "en": "Browse"},
+    "keep_structure":  {"zh": "保留原有目录结构", "en": "Keep original folder structure"},
+    "overwrite":       {"zh": "覆盖同名文件（否则自动改名）", "en": "Overwrite same-name files (else auto-rename)"},
+
+    "ready":           {"zh": "准备就绪", "en": "Ready"},
+
+    "start":           {"zh": "开始转换", "en": "Start"},
+    "cancel":          {"zh": "取消", "en": "Cancel"},
+    "open_output":     {"zh": "打开输出目录", "en": "Open Output Folder"},
+
+    "status_pending":   {"zh": "待转换", "en": "Pending"},
+    "status_waiting":   {"zh": "等待中", "en": "Waiting"},
+    "status_busy":      {"zh": "转换中…", "en": "Converting…"},
+    "status_done":       {"zh": "完成", "en": "Done"},
+    "status_failed":     {"zh": "失败", "en": "Failed"},
+    "status_skipped":    {"zh": "跳过", "en": "Skipped"},
+
+    "info_title":        {"zh": "提示", "en": "Note"},
+    "no_images_in_folder": {"zh": "该文件夹里没有找到可识别的图片。", "en": "No recognizable images found in this folder."},
+    "please_add":       {"zh": "请先添加需要转换的图片。", "en": "Please add images to convert first."},
+    "config_error_title": {"zh": "设置错误", "en": "Configuration Error"},
+    "pick_format":       {"zh": "请选择目标格式。", "en": "Please select a target format."},
+    "width":            {"zh": "宽度", "en": "Width"},
+    "height":           {"zh": "高度", "en": "Height"},
+    "must_be_number":    {"zh": "{} 必须是数字。", "en": "{} must be a number."},
+    "must_be_positive":  {"zh": "{} 必须大于 0。", "en": "{} must be greater than 0."},
+    "too_large":        {"zh": "{} 过大（上限 20000）。", "en": "{} is too large (max 20000)."},
+    "fill_output":       {"zh": "请填写输出目录。", "en": "Please specify an output directory."},
+    "cannot_create_dir": {"zh": "无法创建输出目录", "en": "Cannot create output directory"},
+    "output_not_exist":  {"zh": "输出目录还不存在，先执行一次转换吧。", "en": "Output folder does not exist yet. Run a conversion first."},
+    "still_running_title": {"zh": "仍在转换", "en": "Conversion in progress"},
+    "still_running":     {"zh": "还有图片正在转换，确定要退出吗？", "en": "Images are still converting. Quit anyway?"},
+
+    "dlg_add_files":   {"zh": "选择图片（可多选）", "en": "Select images (multiple)"},
+    "dlg_add_folder":   {"zh": "选择包含图片的文件夹", "en": "Select a folder containing images"},
+    "dlg_output":       {"zh": "选择输出目录", "en": "Select output directory"},
+    "dlg_color":        {"zh": "选择透明区域的填充颜色", "en": "Choose fill color for transparent areas"},
+    "img_files":         {"zh": "图片文件", "en": "Image files"},
+    "all_files":         {"zh": "所有文件", "en": "All files"},
+
+    "added":            {"zh": "已加入 {} 张图片，共 {} 张待转换。", "en": "Added {} images, {} pending in total."},
+    "target_log":       {"zh": "目标格式：{} → {}", "en": "Target format: {} → {}"},
+    "skip_same":        {"zh": "与源文件相同，已跳过", "en": "Same as source, skipped"},
+    "log_ok":           {"zh": "完成", "en": "OK"},
+    "log_fail":         {"zh": "失败", "en": "FAILED"},
+    "log_skip":        {"zh": "跳过", "en": "SKIP"},
+    "processing":       {"zh": "正在处理 {} / {}：{}", "en": "Processing {} / {}: {}"},
+    "cancelled":        {"zh": "已取消", "en": "Cancelled"},
+    "done":            {"zh": "转换完成", "en": "Done"},
+    "summary":          {"zh": "成功 {} 张，失败 {} 张，跳过 {} 张（共 {} 张）", "en": "Succeeded {}, failed {}, skipped {} (total {})"},
+    "summary_time":     {"zh": "，用时 {:.1f} 秒", "en": ", took {:.1f}s"},
+    "output_log":       {"zh": "输出目录：{}", "en": "Output: {}"},
+
+    "frames":           {"zh": "帧", "en": " frames"},
+}
+
+
+def _s(key: str, lang: str) -> str:
+    """按 key + 当前语言取文案；未命中回退英文，再回退 key 本身。"""
+    entry = STR.get(key)
+    if not isinstance(entry, dict):
+        return key
+    return entry.get(lang, entry.get("en", key))
+
+
+def detect_language() -> str:
+    """检测系统语言：中文返回 'zh'，其他返回 'en'。
+
+    优先级：环境变量 IMGCONV_LANG > Windows UI 语言 > locale > 默认英文。
+    """
+    env = os.environ.get("IMGCONV_LANG", "").strip().lower()
+    if env in ("zh", "cn", "zh-cn", "zh_cn", "chinese", "中文"):
+        return "zh"
+    if env in ("en", "eng", "english", "us", "en-us"):
+        return "en"
+
+    # Windows：读取用户默认 UI 语言（比 locale 更准，能反映「显示语言」设置）
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            primary = lang_id & 0xFF
+            if primary == 0x04:      # 0x04 = 中文（简/繁主语言id相同）
+                return "zh"
+            if primary == 0x09:      # 0x09 = 英文
+                return "en"
+        except Exception:
+            pass
+
+    # 其他平台 / 兜底：locale 与 LANG/LANGUAGE 环境变量
+    try:
+        loc = (locale.getdefaultlocale()[0] or "").lower()
+    except Exception:
+        loc = ""
+    if not loc:
+        loc = (os.environ.get("LANG") or os.environ.get("LANGUAGE") or "").lower()
+    if loc.startswith("zh"):
+        return "zh"
+    return "en"
+
+
+DEFAULT_LANG = detect_language()
 
 
 # --------------------------------------------------------------------------- #
@@ -326,6 +476,11 @@ class ImageConverterApp(tk.Tk):
         self.minsize(1000, 660)
         self.configure(bg=COLOR_BG)
 
+        # 语言：启动时按系统语言；切换按钮在会话内即时改变
+        self.lang = DEFAULT_LANG
+        self.T = lambda key: _s(key, self.lang)
+        self._i18n_regs = []  # 需要在语言切换时刷新文本的控件回调
+
         self.items = []          # [{"path": 绝对路径, "rel": 相对目录}]
         self.row_ids = {}        # 小写路径 -> treeview iid
         self.iid_paths = {}      # treeview iid -> 绝对路径
@@ -342,12 +497,88 @@ class ImageConverterApp(tk.Tk):
 
         self._setup_style()
         self._build_ui()
+        self._apply_language()
         self._bind_shortcuts()
         self._fit_on_screen()
 
         if initial_paths:
             self.add_paths(list(initial_paths))
         self.after(120, self._poll_events)
+
+    # ---------------- 语言相关 ----------------
+    def _reg(self, fn) -> None:
+        """注册一个「语言切换时刷新文本」的回调。"""
+        self._i18n_regs.append(fn)
+
+    def _tl(self, parent, key, style="Panel.TLabel", **grid_kw):
+        """创建带翻译的 Label，并登记刷新。"""
+        lbl = ttk.Label(parent, text=self.T(key), style=style)
+        self._reg(lambda: lbl.configure(text=self.T(key)))
+        if grid_kw:
+            lbl.grid(**grid_kw)
+        return lbl
+
+    def _tbtn(self, parent, key, command, **pack_kw):
+        """创建带翻译的 Button，并登记刷新。"""
+        btn = ttk.Button(parent, text=self.T(key), command=command)
+        self._reg(lambda: btn.configure(text=self.T(key)))
+        if pack_kw:
+            btn.pack(**pack_kw)
+        return btn
+
+    def _opt_value(self, options, label):
+        for value, labels in options:
+            if labels.get(self.lang) == label or labels.get("en") == label:
+                return value
+        return options[0][0]
+
+    def _opt_label(self, options, value):
+        for val, labels in options:
+            if val == value:
+                return labels.get(self.lang, labels.get("en", ""))
+        return options[0][1].get(self.lang, "")
+
+    def _current_format_desc(self) -> str:
+        target = TARGET_BY_NAME.get(self.format_var.get())
+        if target:
+            return target["desc"][self.lang]
+        return ""
+
+    def _refresh_rotate_flip(self) -> None:
+        cur_rot = self._opt_value(ROTATE_OPTIONS, self.rotate_var.get())
+        cur_flip = self._opt_value(FLIP_OPTIONS, self.flip_var.get())
+        self.rotate_box["values"] = [lbl[self.lang] for _, lbl in ROTATE_OPTIONS]
+        self.flip_box["values"] = [lbl[self.lang] for _, lbl in FLIP_OPTIONS]
+        self.rotate_var.set(self._opt_label(ROTATE_OPTIONS, cur_rot))
+        self.flip_var.set(self._opt_label(FLIP_OPTIONS, cur_flip))
+
+    def _apply_language(self) -> None:
+        """刷新所有可见文案到当前语言。"""
+        self.title(self.T("app_title"))
+        for fn in self._i18n_regs:
+            fn()
+        # 表格列头
+        self.tree.heading("name", text=self.T("col_name"))
+        self.tree.heading("dim", text=self.T("col_dim"))
+        self.tree.heading("size", text=self.T("col_size"))
+        self.tree.heading("status", text=self.T("col_status"))
+        # 目标格式描述
+        self.format_desc.configure(text=self._current_format_desc())
+        # 旋转 / 翻转下拉
+        self._refresh_rotate_flip()
+        # 计数与状态
+        self._refresh_counts()
+        if not self.running:
+            self.status_label.configure(text=self.T("ready"))
+        # 预览提示
+        if self.preview_photo is None:
+            self.preview_label.configure(text=self.T("preview_hint"))
+        # 切换按钮：显示「点击后将切换到的语言」
+        self.lang_btn.configure(text="EN" if self.lang == "zh" else "中文")
+
+    def on_toggle_lang(self) -> None:
+        self.lang = "en" if self.lang == "zh" else "zh"
+        self._apply_language()
 
     # ---------------- 外观 ----------------
     def _setup_style(self) -> None:
@@ -423,22 +654,37 @@ class ImageConverterApp(tk.Tk):
         self.rowconfigure(2, weight=3)
         self.rowconfigure(4, weight=1)
 
+        # ---- 顶部标题栏（含语言切换按钮）----
         header = ttk.Frame(self, padding=(16, 12, 16, 6))
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text=APP_TITLE, style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(header, text="批量转换图片格式，支持缩放 / 旋转 / 质量调节，全部在本地完成",
-                  style="Sub.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        header.columnconfigure(1, weight=0)
 
+        self.title_label = ttk.Label(header, text=self.T("app_title"), style="Title.TLabel")
+        self.title_label.grid(row=0, column=0, sticky="w")
+        self._reg(lambda: self.title_label.configure(text=self.T("app_title")))
+
+        self.sub_label = ttk.Label(header, text=self.T("subtitle"), style="Sub.TLabel")
+        self.sub_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._reg(lambda: self.sub_label.configure(text=self.T("subtitle")))
+
+        lang_frame = ttk.Frame(header, padding=(0, 0))
+        lang_frame.grid(row=0, column=1, rowspan=2, sticky="ne")
+        self.lang_btn = ttk.Button(lang_frame, text="EN", width=6,
+                                  command=self.on_toggle_lang, takefocus=False)
+        self.lang_btn.pack()
+
+        # ---- 工具栏 ----
         toolbar = ttk.Frame(self, padding=(16, 0, 16, 8))
         toolbar.grid(row=1, column=0, sticky="ew")
-        ttk.Button(toolbar, text="添加图片", command=self.on_add_files).pack(side="left")
-        ttk.Button(toolbar, text="添加文件夹", command=self.on_add_folder).pack(side="left", padx=6)
-        ttk.Button(toolbar, text="移除选中", command=self.on_remove_selected).pack(side="left")
-        ttk.Button(toolbar, text="清空列表", command=self.on_clear).pack(side="left", padx=6)
-        self.count_label = ttk.Label(toolbar, text="共 0 张图片", style="Muted.TLabel")
+        self._tbtn(toolbar, "add_files", self.on_add_files, side="left")
+        self._tbtn(toolbar, "add_folder", self.on_add_folder, side="left", padx=6)
+        self._tbtn(toolbar, "remove_selected", self.on_remove_selected, side="left")
+        self._tbtn(toolbar, "clear_list", self.on_clear, side="left", padx=6)
+        self.count_label = ttk.Label(toolbar, text="", style="Muted.TLabel")
         self.count_label.pack(side="right")
 
+        # ---- 主体 ----
         body = ttk.Frame(self, padding=(16, 0, 16, 0))
         body.grid(row=2, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
@@ -449,16 +695,18 @@ class ImageConverterApp(tk.Tk):
         list_panel.columnconfigure(0, weight=1)
         list_panel.rowconfigure(1, weight=1)
 
-        ttk.Label(list_panel, text="待转换图片", style="Panel.TLabel",
-                  font=("Microsoft YaHei UI", 10, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(8, 4))
+        self.list_title_label = ttk.Label(list_panel, text=self.T("list_title"),
+                                        style="Panel.TLabel",
+                                        font=("Microsoft YaHei UI", 10, "bold"))
+        self.list_title_label.grid(row=0, column=0, sticky="w", padx=10, pady=(8, 4))
+        self._reg(lambda: self.list_title_label.configure(text=self.T("list_title")))
 
         columns = ("name", "dim", "size", "status")
         self.tree = ttk.Treeview(list_panel, columns=columns, show="headings", selectmode="extended")
-        self.tree.heading("name", text="文件名")
-        self.tree.heading("dim", text="尺寸")
-        self.tree.heading("size", text="大小")
-        self.tree.heading("status", text="状态")
+        self.tree.heading("name", text=self.T("col_name"))
+        self.tree.heading("dim", text=self.T("col_dim"))
+        self.tree.heading("size", text=self.T("col_size"))
+        self.tree.heading("status", text=self.T("col_status"))
         self.tree.column("name", width=300, anchor="w")
         self.tree.column("dim", width=130, anchor="center", stretch=False)
         self.tree.column("size", width=100, anchor="e", stretch=False)
@@ -474,6 +722,7 @@ class ImageConverterApp(tk.Tk):
         self.tree.configure(yscrollcommand=scroll.set)
         scroll.grid(row=1, column=1, sticky="ns", pady=(0, 8))
 
+        # ---- 右侧设置 + 预览 ----
         side = ttk.Frame(body, style="Panel.TFrame", padding=(12, 10, 12, 10))
         side.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
         side.columnconfigure(0, weight=1)
@@ -481,87 +730,92 @@ class ImageConverterApp(tk.Tk):
         self.preview_width = int(260 * self.dpi_scale)
         self.preview_height = int(170 * self.dpi_scale)
         self.preview_box = tk.Frame(side, bg="#e9edf5", width=self.preview_width,
-                                    height=self.preview_height, highlightthickness=1,
-                                    highlightbackground="#d3dae6")
+                                   height=self.preview_height, highlightthickness=1,
+                                   highlightbackground="#d3dae6")
         self.preview_box.grid(row=0, column=0, sticky="ew")
         self.preview_box.grid_propagate(False)
-        self.preview_label = tk.Label(self.preview_box, text="选中图片后显示预览",
-                                      bg="#e9edf5", fg=COLOR_MUTED)
+        self.preview_label = tk.Label(self.preview_box, text=self.T("preview_hint"),
+                                    bg="#e9edf5", fg=COLOR_MUTED)
         self.preview_label.place(relx=0.5, rely=0.5, anchor="center")
         self.preview_info = ttk.Label(side, text="—", style="Panel.TLabel",
-                                      foreground=COLOR_MUTED, justify="center")
+                                     foreground=COLOR_MUTED, justify="center")
         self.preview_info.grid(row=1, column=0, sticky="ew", pady=(4, 8))
+        self._reg(lambda: self.preview_info.configure(text="—"))
 
         self._build_settings(side)
 
-        progress_panel = ttk.Frame(self, padding=(16, 10, 16, 0))
-        progress_panel.grid(row=3, column=0, sticky="ew")
-        progress_panel.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(progress_panel, style="Progress.Horizontal.TProgressbar",
-                                        mode="determinate", maximum=100, value=0)
+        # ---- 进度条 ----
+        progress = ttk.Frame(self, padding=(16, 10, 16, 0))
+        progress.grid(row=3, column=0, sticky="ew")
+        progress.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(progress, style="Progress.Horizontal.TProgressbar",
+                                       mode="determinate", maximum=100, value=0)
         self.progress.grid(row=0, column=0, sticky="ew")
-        self.status_label = ttk.Label(progress_panel, text="准备就绪", style="Muted.TLabel")
+        self.status_label = ttk.Label(progress, text=self.T("ready"), style="Muted.TLabel")
         self.status_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        log_panel = ttk.Frame(self, padding=(16, 8, 16, 0))
-        log_panel.grid(row=4, column=0, sticky="nsew")
-        log_panel.columnconfigure(0, weight=1)
-        log_panel.rowconfigure(0, weight=1)
-        self.log = tk.Text(log_panel, height=5, wrap="none", relief="solid", borderwidth=1,
+        # ---- 日志 ----
+        log = ttk.Frame(self, padding=(16, 8, 16, 0))
+        log.grid(row=4, column=0, sticky="nsew")
+        log.columnconfigure(0, weight=1)
+        log.rowconfigure(0, weight=1)
+        self.log = tk.Text(log, height=5, wrap="none", relief="solid", borderwidth=1,
                            bg="#0f172a", fg="#d7e3f4", insertbackground="#d7e3f4",
                            font=("Consolas", 9), state="disabled")
         self.log.grid(row=0, column=0, sticky="nsew")
-        log_scroll = ttk.Scrollbar(log_panel, orient="vertical", command=self.log.yview)
+        log_scroll = ttk.Scrollbar(log, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=log_scroll.set)
         log_scroll.grid(row=0, column=1, sticky="ns")
 
+        # ---- 底部操作栏 ----
         footer = ttk.Frame(self, padding=(16, 10, 16, 14))
         footer.grid(row=5, column=0, sticky="ew")
-        self.start_button = ttk.Button(footer, text="开始转换", style="Accent.TButton",
-                                       command=self.on_start)
+        self.start_button = ttk.Button(footer, text=self.T("start"), style="Accent.TButton",
+                                     command=self.on_start)
         self.start_button.pack(side="left")
-        self.cancel_button = ttk.Button(footer, text="取消", command=self.on_cancel,
-                                        state="disabled")
+        self._reg(lambda: self.start_button.configure(text=self.T("start")))
+        self.cancel_button = ttk.Button(footer, text=self.T("cancel"), command=self.on_cancel,
+                                      state="disabled")
         self.cancel_button.pack(side="left", padx=8)
-        ttk.Button(footer, text="打开输出目录", command=self.on_open_output).pack(side="left")
+        self._reg(lambda: self.cancel_button.configure(text=self.T("cancel")))
+        self._tbtn(footer, "open_output", self.on_open_output, side="left")
         self.total_label = ttk.Label(footer, text="", style="Muted.TLabel")
         self.total_label.pack(side="right")
 
     def _build_settings(self, parent) -> None:
-        box = ttk.Labelframe(parent, text="输出设置", padding=(12, 8, 12, 12))
+        box = ttk.Labelframe(parent, text=self.T("settings_title"), padding=(12, 8, 12, 12))
         box.grid(row=2, column=0, sticky="ew")
         box.columnconfigure(1, weight=1, minsize=int(150 * self.dpi_scale))
         row = 0
 
-        ttk.Label(box, text="目标格式", style="Panel.TLabel").grid(row=row, column=0,
-                                                                   sticky="w", pady=3)
+        self._tl(box, "target_format", row=row, column=0, sticky="w", pady=3)
         self.format_var = tk.StringVar(value=TARGETS[0]["name"])
         self.format_box = ttk.Combobox(box, textvariable=self.format_var, values=TARGET_NAMES,
-                                       state="readonly", width=16)
+                                      state="readonly", width=16)
         self.format_box.grid(row=row, column=1, sticky="ew", pady=3)
         self.format_box.bind("<<ComboboxSelected>>", self.on_format_change)
         row += 1
 
-        self.format_desc = ttk.Label(box, text=TARGETS[0]["desc"], style="Muted.TLabel",
-                                     wraplength=250, justify="left")
+        self.format_desc = ttk.Label(box, text=self._current_format_desc(), style="Muted.TLabel",
+                                    wraplength=250, justify="left")
         self.format_desc.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._reg(lambda: self.format_desc.configure(text=self._current_format_desc()))
         row += 1
 
-        ttk.Label(box, text="画质", style="Panel.TLabel").grid(row=row, column=0, sticky="w")
+        self._tl(box, "quality", row=row, column=0, sticky="w")
         quality_wrap = ttk.Frame(box, style="Panel.TFrame")
         quality_wrap.grid(row=row, column=1, sticky="ew")
         quality_wrap.columnconfigure(0, weight=1)
         self.quality_var = tk.DoubleVar(value=DEFAULT_QUALITY)
         self.quality_scale = ttk.Scale(quality_wrap, from_=1, to=100, orient="horizontal",
-                                       variable=self.quality_var, command=self.on_quality_change)
+                                      variable=self.quality_var, command=self.on_quality_change)
         self.quality_scale.grid(row=0, column=0, sticky="ew")
         self.quality_label = ttk.Label(quality_wrap, text=str(DEFAULT_QUALITY), width=4,
-                                       style="Panel.TLabel")
+                                      style="Panel.TLabel")
         self.quality_label.grid(row=0, column=1, sticky="e")
         row += 1
 
-        ttk.Label(box, text="尺寸", style="Panel.TLabel").grid(row=row, column=0, sticky="w",
-                                                               pady=(4, 0))
+        self._tl(box, "size", row=row, column=0, sticky="w", pady=(4, 0))
         size_wrap = ttk.Frame(box, style="Panel.TFrame")
         size_wrap.grid(row=row, column=1, sticky="ew", pady=(4, 0))
         self.width_var = tk.StringVar(value="")
@@ -569,65 +823,73 @@ class ImageConverterApp(tk.Tk):
         ttk.Entry(size_wrap, textvariable=self.width_var, width=6).grid(row=0, column=0)
         ttk.Label(size_wrap, text="×", style="Panel.TLabel").grid(row=0, column=1, padx=3)
         ttk.Entry(size_wrap, textvariable=self.height_var, width=6).grid(row=0, column=2)
-        ttk.Button(size_wrap, text="原始", width=5,
-                   command=lambda: (self.width_var.set(""), self.height_var.set(""))
-                   ).grid(row=0, column=3, padx=(6, 0))
+        self.orig_btn = ttk.Button(size_wrap, text=self.T("original"), width=5,
+                                  command=lambda: (self.width_var.set(""), self.height_var.set("")))
+        self.orig_btn.grid(row=0, column=3, padx=(6, 0))
+        self._reg(lambda: self.orig_btn.configure(text=self.T("original")))
         row += 1
 
         self.keep_ratio_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(box, text="保持宽高比（填满给定范围，不拉伸）",
-                        variable=self.keep_ratio_var).grid(row=row, column=0, columnspan=2,
-                                                           sticky="w", pady=(4, 0))
+        self.keep_ratio_chk = ttk.Checkbutton(box, text=self.T("keep_ratio"),
+                                            variable=self.keep_ratio_var)
+        self.keep_ratio_chk.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self._reg(lambda: self.keep_ratio_chk.configure(text=self.T("keep_ratio")))
         row += 1
 
-        ttk.Label(box, text="旋转 / 翻转", style="Panel.TLabel").grid(row=row, column=0,
-                                                                      sticky="w", pady=(6, 0))
+        self._tl(box, "transform", row=row, column=0, sticky="w", pady=(6, 0))
         transform_wrap = ttk.Frame(box, style="Panel.TFrame")
         transform_wrap.grid(row=row, column=1, sticky="w", pady=(6, 0))
-        self.rotate_var = tk.StringVar(value="不旋转")
-        ttk.Combobox(transform_wrap, textvariable=self.rotate_var, values=list(ROTATE_CHOICES),
-                     state="readonly", width=8).grid(row=0, column=0, sticky="w")
-        self.flip_var = tk.StringVar(value="不翻转")
-        ttk.Combobox(transform_wrap, textvariable=self.flip_var, values=list(FLIP_CHOICES),
-                     state="readonly", width=8).grid(row=0, column=1, sticky="w", padx=(4, 0))
+        self.rotate_var = tk.StringVar(value=self._opt_label(ROTATE_OPTIONS, 0))
+        self.rotate_box = ttk.Combobox(transform_wrap, textvariable=self.rotate_var,
+                                      values=[lbl[self.lang] for _, lbl in ROTATE_OPTIONS],
+                                      state="readonly", width=8)
+        self.rotate_box.grid(row=0, column=0, sticky="w")
+        self.flip_var = tk.StringVar(value=self._opt_label(FLIP_OPTIONS, "none"))
+        self.flip_box = ttk.Combobox(transform_wrap, textvariable=self.flip_var,
+                                    values=[lbl[self.lang] for _, lbl in FLIP_OPTIONS],
+                                    state="readonly", width=8)
+        self.flip_box.grid(row=0, column=1, sticky="w", padx=(4, 0))
         row += 1
 
-        ttk.Label(box, text="背景色", style="Panel.TLabel").grid(row=row, column=0, sticky="w",
-                                                                 pady=(4, 0))
+        self._tl(box, "background", row=row, column=0, sticky="w", pady=(4, 0))
         bg_wrap = ttk.Frame(box, style="Panel.TFrame")
         bg_wrap.grid(row=row, column=1, sticky="w", pady=(4, 0))
         self.background_var = tk.StringVar(value=DEFAULT_BG)
         self.bg_swatch = tk.Button(bg_wrap, text=DEFAULT_BG, width=8, relief="groove",
-                                   bg=DEFAULT_BG, command=self.on_pick_color)
+                                  bg=DEFAULT_BG, command=self.on_pick_color)
         self.bg_swatch.grid(row=0, column=0)
-        ttk.Label(bg_wrap, text="透明区域填充", style="Muted.TLabel").grid(row=0, column=1,
-                                                                           padx=(6, 0))
+        self._tl(bg_wrap, "transparent_fill", style="Muted.TLabel").grid(row=0, column=1,
+                                                                       padx=(6, 0))
         row += 1
 
         ttk.Separator(box, orient="horizontal").grid(row=row, column=0, columnspan=2,
-                                                     sticky="ew", pady=8)
+                                                  sticky="ew", pady=8)
         row += 1
 
-        ttk.Label(box, text="输出目录", style="Panel.TLabel").grid(row=row, column=0,
-                                                                   sticky="w")
+        self._tl(box, "output_dir", row=row, column=0, sticky="w")
         out_wrap = ttk.Frame(box, style="Panel.TFrame")
         out_wrap.grid(row=row, column=1, sticky="ew")
         out_wrap.columnconfigure(0, weight=1)
         self.output_var = tk.StringVar(value=os.path.join(app_dir(), "output"))
         ttk.Entry(out_wrap, textvariable=self.output_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(out_wrap, text="浏览", width=5, command=self.on_pick_output).grid(
-            row=0, column=1, padx=(4, 0))
+        self.browse_btn = ttk.Button(out_wrap, text=self.T("browse"), width=5,
+                                    command=self.on_pick_output)
+        self.browse_btn.grid(row=0, column=1, padx=(4, 0))
+        self._reg(lambda: self.browse_btn.configure(text=self.T("browse")))
         row += 1
 
         self.keep_structure_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(box, text="保留原有目录结构", variable=self.keep_structure_var).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.keep_structure_chk = ttk.Checkbutton(box, text=self.T("keep_structure"),
+                                                variable=self.keep_structure_var)
+        self.keep_structure_chk.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._reg(lambda: self.keep_structure_chk.configure(text=self.T("keep_structure")))
         row += 1
 
         self.overwrite_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(box, text="覆盖同名文件（否则自动改名）",
-                        variable=self.overwrite_var).grid(row=row, column=0, columnspan=2,
-                                                          sticky="w")
+        self.overwrite_chk = ttk.Checkbutton(box, text=self.T("overwrite"),
+                                            variable=self.overwrite_var)
+        self.overwrite_chk.grid(row=row, column=0, columnspan=2, sticky="w")
+        self._reg(lambda: self.overwrite_chk.configure(text=self.T("overwrite")))
 
     def _bind_shortcuts(self) -> None:
         self.bind("<Delete>", lambda _e: self.on_remove_selected())
@@ -657,13 +919,13 @@ class ImageConverterApp(tk.Tk):
             info = self._describe(path)
             self.items.append({"path": path, "rel": rel, "info": info})
             item_id = self.tree.insert("", "end", values=(os.path.basename(path), info["dim"],
-                                                          info["size"], "待转换"))
+                                                        info["size"], self.T("status_pending")))
             self.row_ids[key] = item_id
             self.iid_paths[item_id] = path
             added += 1
         if added:
             self._refresh_counts()
-            self.log_line(f"已加入 {added} 张图片，共 {len(self.items)} 张待转换。")
+            self.log_line(self.T("added").format(added, len(self.items)))
             if not self.tree.selection():
                 first = self.tree.get_children()
                 if first:
@@ -679,7 +941,7 @@ class ImageConverterApp(tk.Tk):
                 frames = int(getattr(img, "n_frames", 1) or 1)
                 dim = f"{img.width}×{img.height}"
                 if frames > 1:
-                    dim += f" ({frames}帧)"
+                    dim += f" ({frames}{self.T('frames')})"
                 info["dim"] = dim
                 info["mode"] = img.mode
                 info["frames"] = frames
@@ -689,22 +951,22 @@ class ImageConverterApp(tk.Tk):
         return info
 
     def _refresh_counts(self) -> None:
-        self.count_label.configure(text=f"共 {len(self.items)} 张图片")
+        self.count_label.configure(text=self.T("count").format(len(self.items)))
 
     def on_add_files(self) -> None:
         patterns = " ".join(f"*{ext}" for ext in sorted(INPUT_EXTS))
         paths = filedialog.askopenfilenames(
-            title="选择图片（可多选）",
-            filetypes=[("图片文件", patterns), ("所有文件", "*.*")])
+            title=self.T("dlg_add_files"),
+            filetypes=[(self.T("img_files"), patterns), (self.T("all_files"), "*.*")])
         if paths:
             self.add_paths(list(paths))
 
     def on_add_folder(self) -> None:
-        folder = filedialog.askdirectory(title="选择包含图片的文件夹")
+        folder = filedialog.askdirectory(title=self.T("dlg_add_folder"))
         if folder:
             count = self.add_paths([folder])
             if count == 0:
-                messagebox.showinfo("提示", "该文件夹里没有找到可识别的图片。")
+                messagebox.showinfo(self.T("info_title"), self.T("no_images_in_folder"))
 
     def on_remove_selected(self) -> None:
         if self.running:
@@ -729,11 +991,11 @@ class ImageConverterApp(tk.Tk):
         self.row_ids.clear()
         self.iid_paths.clear()
         self.preview_photo = None
-        self.preview_label.configure(image="", text="选中图片后显示预览")
+        self.preview_label.configure(image="", text=self.T("preview_hint"))
         self.preview_info.configure(text="—")
         self._refresh_counts()
         self.progress.configure(value=0)
-        self.status_label.configure(text="准备就绪")
+        self.status_label.configure(text=self.T("ready"))
         self.total_label.configure(text="")
 
     def on_select(self, _event=None) -> None:
@@ -763,7 +1025,7 @@ class ImageConverterApp(tk.Tk):
                 thumb.thumbnail((box_w - 12, box_h - 12), resample_filter())
         except Exception as exc:
             self.preview_photo = None
-            self.preview_label.configure(image="", text="无法预览该图片")
+            self.preview_label.configure(image="", text=self.T("preview_no_image"))
             self.preview_info.configure(text=str(exc)[:80])
             return
 
@@ -771,15 +1033,13 @@ class ImageConverterApp(tk.Tk):
         self.preview_label.configure(image=self.preview_photo, text="")
         detail = f"{size[0]} × {size[1]} · {mode}"
         if frames > 1:
-            detail += f" · {frames} 帧"
+            detail += f" · {frames}{self.T('frames')}"
         detail += f" · {human_size(os.path.getsize(path))}"
         self.preview_info.configure(text=detail)
 
     # ---------------- 设置交互 ----------------
     def on_format_change(self, _event=None) -> None:
-        target = TARGET_BY_NAME.get(self.format_var.get())
-        if target:
-            self.format_desc.configure(text=target["desc"])
+        self.format_desc.configure(text=self._current_format_desc())
         self.quality_scale.state(["!disabled"] if self.format_var.get() in
                                  ("JPG / JPEG", "WebP") else ["disabled"])
 
@@ -788,32 +1048,32 @@ class ImageConverterApp(tk.Tk):
 
     def on_pick_color(self) -> None:
         color = colorchooser.askcolor(color=self.background_var.get(),
-                                      title="选择透明区域的填充颜色")
+                                     title=self.T("dlg_color"))
         if color and color[1]:
             self.background_var.set(color[1].upper())
             self.bg_swatch.configure(bg=color[1], activebackground=color[1],
-                                     text=color[1].upper())
+                                    text=color[1].upper())
 
     def on_pick_output(self) -> None:
-        folder = filedialog.askdirectory(title="选择输出目录",
-                                         initialdir=self.output_var.get() or app_dir())
+        folder = filedialog.askdirectory(title=self.T("dlg_output"),
+                                        initialdir=self.output_var.get() or app_dir())
         if folder:
             self.output_var.set(folder)
 
     def on_open_output(self) -> None:
         folder = self.output_var.get().strip() or os.path.join(app_dir(), "output")
         if not os.path.isdir(folder):
-            messagebox.showinfo("提示", "输出目录还不存在，先执行一次转换吧。")
+            messagebox.showinfo(self.T("info_title"), self.T("output_not_exist"))
             return
         try:
             os.startfile(folder)  # type: ignore[attr-defined]
         except Exception:
-            messagebox.showinfo("输出目录", folder)
+            messagebox.showinfo(self.T("output_dir"), folder)
 
     def collect_options(self):
         target = TARGET_BY_NAME.get(self.format_var.get())
         if target is None:
-            messagebox.showerror("设置错误", "请选择目标格式。")
+            messagebox.showerror(self.T("config_error_title"), self.T("pick_format"))
             return None
 
         def parse(entry_value, label):
@@ -823,23 +1083,23 @@ class ImageConverterApp(tk.Tk):
             try:
                 number = int(float(text))
             except ValueError:
-                raise ValueError(f"{label}必须是数字。")
+                raise ValueError(self.T("must_be_number").format(label))
             if number <= 0:
-                raise ValueError(f"{label}必须大于 0。")
+                raise ValueError(self.T("must_be_positive").format(label))
             if number > 20000:
-                raise ValueError(f"{label}过大（上限 20000）。")
+                raise ValueError(self.T("too_large").format(label))
             return number
 
         try:
-            width = parse(self.width_var.get(), "宽度")
-            height = parse(self.height_var.get(), "高度")
+            width = parse(self.width_var.get(), self.T("width"))
+            height = parse(self.height_var.get(), self.T("height"))
         except ValueError as exc:
-            messagebox.showerror("设置错误", str(exc))
+            messagebox.showerror(self.T("config_error_title"), str(exc))
             return None
 
         out_dir = self.output_var.get().strip()
         if not out_dir:
-            messagebox.showerror("设置错误", "请填写输出目录。")
+            messagebox.showerror(self.T("config_error_title"), self.T("fill_output"))
             return None
 
         return {
@@ -848,8 +1108,8 @@ class ImageConverterApp(tk.Tk):
             "width": width,
             "height": height,
             "keep_ratio": bool(self.keep_ratio_var.get()),
-            "rotate": ROTATE_CHOICES.get(self.rotate_var.get(), 0),
-            "flip": FLIP_CHOICES.get(self.flip_var.get(), "none"),
+            "rotate": self._opt_value(ROTATE_OPTIONS, self.rotate_var.get()),
+            "flip": self._opt_value(FLIP_OPTIONS, self.flip_var.get()),
             "background": hex_to_rgb(self.background_var.get()),
             "out_dir": out_dir,
             "keep_structure": bool(self.keep_structure_var.get()),
@@ -861,7 +1121,7 @@ class ImageConverterApp(tk.Tk):
         if self.running:
             return
         if not self.items:
-            messagebox.showinfo("提示", "请先添加需要转换的图片。")
+            messagebox.showinfo(self.T("info_title"), self.T("please_add"))
             return
         opt = self.collect_options()
         if opt is None:
@@ -869,7 +1129,7 @@ class ImageConverterApp(tk.Tk):
         try:
             os.makedirs(opt["out_dir"], exist_ok=True)
         except OSError as exc:
-            messagebox.showerror("无法创建输出目录", str(exc))
+            messagebox.showerror(self.T("cannot_create_dir"), str(exc))
             return
 
         self.cancel_event.clear()
@@ -878,15 +1138,15 @@ class ImageConverterApp(tk.Tk):
         self.total = len(self.items)
         self.progress.configure(maximum=max(1, self.total), value=0)
         self.total_label.configure(text=f"0 / {self.total}")
-        self.status_label.configure(text="正在转换…")
+        self.status_label.configure(text=self.T("status_busy"))
         self._set_busy(True)
         self._clear_log()
-        self.log_line(f"目标格式：{opt['target']['name']} → {opt['out_dir']}")
+        self.log_line(self.T("target_log").format(opt['target']['name'], opt['out_dir']))
 
         for item in self.items:
             item_id = self.row_ids.get(item["path"].lower())
             if item_id:
-                self.tree.set(item_id, "status", "等待中")
+                self.tree.set(item_id, "status", self.T("status_waiting"))
                 self.tree.item(item_id, tags=())
 
         snapshot = [dict(item) for item in self.items]
@@ -911,12 +1171,12 @@ class ImageConverterApp(tk.Tk):
             dst = os.path.join(out_dir, stem + target["ext"])
 
             if os.path.abspath(dst).lower() == os.path.abspath(src).lower():
-                self.events.put(("skip", key, "与源文件相同，已跳过"))
+                self.events.put(("skip", key, self.T("skip_same")))
                 continue
             try:
                 dst = unique_path(dst, used, opt["overwrite"])
             except OSError as exc:
-                self.events.put(("fail", key, f"无法创建输出目录：{exc}"))
+                self.events.put(("fail", key, f"{type(exc).__name__}: {exc}"))
                 continue
 
             begin = time.time()
@@ -944,40 +1204,40 @@ class ImageConverterApp(tk.Tk):
             _, key, index, total, src = event
             item_id = self.row_ids.get(key)
             if item_id:
-                self.tree.set(item_id, "status", "转换中…")
+                self.tree.set(item_id, "status", self.T("status_busy"))
                 self.tree.item(item_id, tags=("busy",))
                 self.tree.see(item_id)
             self.status_label.configure(
-                text=f"正在处理 {index} / {total}：{os.path.basename(src)}")
+                text=self.T("processing").format(index, total, os.path.basename(src)))
         elif kind == "success":
             _, key, detail, dst = event
             item_id = self.row_ids.get(key)
             if item_id:
-                self.tree.set(item_id, "status", "完成")
+                self.tree.set(item_id, "status", self.T("status_done"))
                 self.tree.item(item_id, tags=("ok",))
             self.ok_count += 1
             self.done += 1
-            self.log_line(f"√ {os.path.basename(dst)}  ({detail})")
+            self.log_line(f"{self.T('log_ok')} {os.path.basename(dst)}  ({detail})")
             self._update_progress()
         elif kind == "fail":
             _, key, message = event
             item_id = self.row_ids.get(key)
             if item_id:
-                self.tree.set(item_id, "status", "失败")
+                self.tree.set(item_id, "status", self.T("status_failed"))
                 self.tree.item(item_id, tags=("fail",))
             self.fail_count += 1
             self.done += 1
-            self.log_line(f"× 转换失败：{message}")
+            self.log_line(f"{self.T('log_fail')} {message}")
             self._update_progress()
         elif kind == "skip":
             _, key, message = event
             item_id = self.row_ids.get(key)
             if item_id:
-                self.tree.set(item_id, "status", "跳过")
+                self.tree.set(item_id, "status", self.T("status_skipped"))
                 self.tree.item(item_id, tags=("skip",))
             self.skip_count += 1
             self.done += 1
-            self.log_line(f"- 已跳过：{message}")
+            self.log_line(f"{self.T('log_skip')} {message}")
             self._update_progress()
         elif kind == "finished":
             _, total, seconds = event
@@ -993,15 +1253,15 @@ class ImageConverterApp(tk.Tk):
     def _finish(self, total: int, seconds: float, cancelled: bool) -> None:
         self.running = False
         self._set_busy(False)
-        headline = "已取消" if cancelled else "转换完成"
-        summary = (f"{headline}：成功 {self.ok_count} 张，失败 {self.fail_count} 张，"
-                   f"跳过 {self.skip_count} 张（共 {total} 张）")
+        headline = self.T("cancelled") if cancelled else self.T("done")
+        summary = (self.T("summary").format(self.ok_count, self.fail_count,
+                                           self.skip_count, total))
         if seconds:
-            summary += f"，用时 {seconds:.1f} 秒"
+            summary += self.T("summary_time").format(seconds)
         self.status_label.configure(text=summary)
         self.log_line("")
         self.log_line(summary)
-        self.log_line(f"输出目录：{self.output_var.get()}")
+        self.log_line(self.T("output_log").format(self.output_var.get()))
 
     def _set_busy(self, busy: bool) -> None:
         self.start_button.configure(state="disabled" if busy else "normal")
@@ -1010,7 +1270,7 @@ class ImageConverterApp(tk.Tk):
     def on_cancel(self) -> None:
         if self.running:
             self.cancel_event.set()
-            self.status_label.configure(text="正在停止…（当前图片处理完后终止）")
+            self.status_label.configure(text=self.T("status_busy"))
 
     # ---------------- 日志 ----------------
     def log_line(self, text: str) -> None:
@@ -1028,7 +1288,7 @@ class ImageConverterApp(tk.Tk):
 
     def on_close(self) -> None:
         if self.running:
-            if not messagebox.askyesno("仍在转换", "还有图片正在转换，确定要退出吗？"):
+            if not messagebox.askyesno(self.T("still_running_title"), self.T("still_running")):
                 return
             self.cancel_event.set()
         self.destroy()
@@ -1077,7 +1337,7 @@ def run_selftest(report_path: str) -> int:
         for index in range(3):
             frame = Image.new("RGB", (64, 64), (0, 0, 0))
             ImageDraw.Draw(frame).rectangle((index * 18, 0, index * 18 + 20, 64),
-                                            fill=(60 + index * 60, 30, 200 - index * 50))
+                                           fill=(60 + index * 60, 30, 200 - index * 50))
             frames.append(frame)
         anim_path = os.path.join(work, "anim.gif")
         frames[0].save(anim_path, save_all=True, append_images=frames[1:], duration=100, loop=0)
